@@ -1,0 +1,249 @@
+"""What the LaTeX layer turns into, including the parser's known traps."""
+
+# SymPy's type stubs say Eq() may return an Integer, so Or(Eq(...), ...) in the
+# expected values below would all be flagged. That's a stub limitation, not a bug.
+# pyright: reportArgumentType=false
+
+import pytest
+from sympy import (
+    And,
+    Basic,
+    Derivative,
+    Eq,
+    Integral,
+    Ne,
+    Or,
+    Rational,
+    Symbol,
+    atan,
+    cos,
+    log,
+    sin,
+    symbols,
+    sympify,
+)
+
+from stepcheck.parse import (
+    LatexParseError,
+    LineKind,
+    parse_expression,
+    parse_line,
+    parse_statement,
+    split_lines,
+)
+
+x, y, A, a, theta = symbols("x y A a theta")
+
+
+def same(actual: Basic, expected: Basic) -> bool:
+    """Structural equality after evaluating leftovers like `1*5*x` from the parser."""
+    return sympify(str(actual)) == sympify(str(expected))
+
+
+# ------------------------------------------------------------------- statements
+
+
+@pytest.mark.parametrize(
+    ("latex", "expected"),
+    [
+        (r"x^2 - 5x + 6 = 0", Eq(x**2 - 5 * x + 6, 0)),
+        (r"(x-2)(x-3) = 0", Eq((x - 2) * (x - 3), 0)),
+        (r"2x + 3y = 7", Eq(2 * x + 3 * y, 7)),
+        (r"x \le 5", x <= 5),
+        (r"x \neq 0", Ne(x, 0)),
+        (r"|x - 1| = 3", Eq(abs(x - 1), 3)),
+    ],
+)
+def test_single_relations(latex: str, expected: Basic) -> None:
+    assert same(parse_statement(latex), expected)
+
+
+@pytest.mark.parametrize(
+    ("latex", "expected"),
+    [
+        (r"x = \pm 2", Or(Eq(x, -2), Eq(x, 2))),
+        (r"x = 2 \text{ or } x = 3", Or(Eq(x, 2), Eq(x, 3))),
+        (r"x = 2 \lor x = 3", Or(Eq(x, 2), Eq(x, 3))),
+        (r"x^2 = 4, x > 0", And(Eq(x**2, 4), x > 0)),
+        (r"x = 1 \text{ and } y = 2", And(Eq(x, 1), Eq(y, 2))),
+        (r"\begin{cases} x + y = 3 \\ x - y = 1 \end{cases}", And(Eq(x + y, 3), Eq(x - y, 1))),
+    ],
+    ids=["plus-minus", "text-or", "lor", "comma-is-and", "text-and", "cases-is-a-system"],
+)
+def test_and_or_are_explicit(latex: str, expected: Basic) -> None:
+    # The parser alone returns the same unordered set for "x = 2, x = 3" and
+    # "x = 2 or x = 3", so "and" vs "or" must be decided before parsing.
+    assert same(parse_statement(latex), expected)
+
+
+def test_mixing_and_with_or_is_rejected() -> None:
+    with pytest.raises(LatexParseError, match="ambiguous"):
+        parse_statement(r"x = 1, y = 2 \text{ or } y = 3")
+
+
+def test_arithmetic_relations_stay_unevaluated() -> None:
+    # A wrong arithmetic line must keep both sides, not collapse to `False`.
+    wrong = parse_statement(r"3 \cdot 4 = 13")
+    assert isinstance(wrong, Eq)
+    assert wrong.rhs == 13
+
+
+# ------------------------------------------------------------------ trigonometry
+
+
+@pytest.mark.parametrize(
+    ("latex", "expected"),
+    [
+        (r"\sin^{2} x + \cos^{2} x = 1", Eq(sin(x) ** 2 + cos(x) ** 2, 1)),
+        (
+            r"\sin 2 \theta = 2 \sin \theta \cos \theta",
+            Eq(sin(2 * theta), 2 * sin(theta) * cos(theta)),
+        ),
+        (
+            r"\sin(2\theta) = 2\sin(\theta)\cos(\theta)",
+            Eq(sin(2 * theta), 2 * sin(theta) * cos(theta)),
+        ),
+    ],
+)
+def test_trig_identities(latex: str, expected: Basic) -> None:
+    assert same(parse_statement(latex), expected)
+
+
+@pytest.mark.parametrize(
+    ("latex", "expected"),
+    [
+        (r"\sin 2\theta", sin(2 * theta)),
+        (r"\sin 2x \cos x", sin(2 * x) * cos(x)),
+        (r"\tan^{-1} x", atan(x)),
+    ],
+)
+def test_trig_without_brackets(latex: str, expected: Basic) -> None:
+    assert same(parse_expression(latex), expected)
+
+
+@pytest.mark.parametrize(
+    ("latex", "expected"),
+    [
+        (r"\ln{\left(x \right)}^{2}", log(x) ** 2),  # how SymPy's printer writes (ln x)²
+        (r"\sin{\left(x \right)}^{2}", sin(x) ** 2),
+        (r"\sin{x}^{2}", sin(x**2)),  # braces around a bare argument: sin(x²), as written
+        (r"\ln x^{2}", log(x**2)),
+    ],
+)
+def test_power_after_a_function(latex: str, expected: Basic) -> None:
+    assert parse_expression(latex) == expected
+
+
+@pytest.mark.xfail(strict=True, reason=r"\cdot doesn't end a bracketless argument: sin(3x)")
+def test_trig_argument_ends_at_cdot() -> None:
+    assert same(parse_expression(r"2 \sin x \cdot 3"), 6 * sin(x))
+
+
+# -------------------------------------------------------------------- expressions
+
+
+def test_calculus() -> None:
+    assert parse_expression(r"\frac{d}{dx} x^3") == Derivative(x**3, x)
+    assert parse_expression(r"\int_0^1 x^2 \, dx") == Integral(x**2, (x, 0, 1))
+
+
+@pytest.mark.parametrize(
+    ("latex", "expected"),
+    [
+        (r"\boxed{42}", 42),
+        (r"1{,}000 \times 3", 3000),
+        (r"1,000 \times 3", 3000),
+        (r"50\% \cdot 80", 40),
+        (r"\$5 \times 3", 15),
+        (r"3\frac{1}{2}", Rational(7, 2)),  # a mixed number, not 3 * 1/2
+    ],
+)
+def test_word_problem_notation(latex: str, expected: int | Rational) -> None:
+    assert parse_expression(latex).doit() == expected
+
+
+def test_decimals_become_exact_rationals() -> None:
+    assert parse_expression(r"0.1 + 0.2").doit() == Rational(3, 10)
+
+
+def test_symbol_case_is_preserved() -> None:
+    # The parser's default lowercases symbols, which would turn A + a into 2a.
+    assert parse_expression(r"A + a") == A + a
+
+
+# ----------------------------------------------------------- misparse protection
+
+
+@pytest.mark.parametrize(
+    "latex",
+    [
+        r"\vec{v} \cdot \vec{w}",
+        r"1,5",
+        r"a{,}b",
+        r"x^2 = ",
+        r"\frac{1}{",
+        r"f'(x) = 2x",
+        r"5 \text{ km} = 5000 \text{ m}",
+        r"\frac{d^2 y}{dx^2}",
+    ],
+    ids=[
+        "vector-command",
+        "stray-comma",
+        "comma-between-letters",
+        "dangling-equals",
+        "unbalanced",
+        "prime-would-vanish",
+        "units-would-be-stripped",
+        "dx-would-be-a-symbol",
+    ],
+)
+def test_untrustworthy_input_is_rejected(latex: str) -> None:
+    with pytest.raises(LatexParseError):
+        parse_line(latex)
+
+
+def test_capital_i_is_a_symbol_not_the_imaginary_unit() -> None:
+    assert parse_expression(r"\mu_{0} I") == Symbol("mu_0") * Symbol("I")
+
+
+@pytest.mark.parametrize(
+    ("latex", "expected"),
+    [
+        (r"$x = 5$", Eq(x, 5)),
+        (r"\(x = 5\)", Eq(x, 5)),
+        (r"5 \$ = 5", Eq(5, 5, evaluate=False)),  # an escaped \$ is currency, not math mode
+        (r"\$1{,}200 + \$300", 1500),
+    ],
+)
+def test_dollar_signs(latex: str, expected: Basic) -> None:
+    assert parse_line(latex)[1] == expected
+
+
+# ------------------------------------------------------------------ line handling
+
+
+@pytest.mark.parametrize(
+    ("latex", "kind"),
+    [
+        (r"(x + 1)^2", LineKind.EXPRESSION),
+        (r"x^2 + 2x + 1 = 0", LineKind.STATEMENT),
+        (r"= x^2 + 2x + 1", LineKind.CONTINUATION),
+        (r"&= x^2 + 2x + 1", LineKind.CONTINUATION),
+        (r"$x \le 5$", LineKind.STATEMENT),
+    ],
+)
+def test_line_kinds(latex: str, kind: LineKind) -> None:
+    assert parse_line(latex)[0] == kind
+
+
+def test_split_lines() -> None:
+    text = r"""\begin{aligned}
+    (x+1)^2 &= x^2 + 2x + 1 \\
+    &= x(x + 2) + 1. \implies y = 2
+    \end{aligned}"""
+    assert split_lines(text) == ["(x+1)^2 = x^2 + 2x + 1", "= x(x + 2) + 1", "y = 2"]
+
+
+def test_split_lines_keeps_cases_together() -> None:
+    text = r"\begin{cases} x + y = 3 \\ x - y = 1 \end{cases} \\ x = 2"
+    assert split_lines(text) == ["x + y = 3 , x - y = 1", "x = 2"]
