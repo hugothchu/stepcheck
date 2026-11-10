@@ -9,8 +9,8 @@
 | # | Status | Deliverable |
 |---|---|---|
 | M1: Parsing and models | ✅ done | `parse.py` (latex2sympy2_extended + clean-up + misparse guard), Pydantic `Line` and `Solution`, tests |
-| M2: The two checkers | next | Equivalence (`simplify`) and consistency (solver) checks; `stepcheck check solution.tex` with no LLM. Repo goes public. |
-| M3: LLM solver + tools | | LLM writes LaTeX steps → `Solution` → per-line report. `simplify` and `solve` exposed to the LLM as **tools** for direct questions. |
+| M2: The two checkers | ✅ done | Equivalence (`simplify`) and consistency (solver) checks; `stepcheck check solution.tex` with no LLM. Repo goes public. |
+| M3: LLM solver + tools | next | LLM writes LaTeX steps → `Solution` → per-line report. `simplify` and `solve` exposed to the LLM as **tools** for direct questions. |
 | M4: Evals | | GSM8K + MATH-500 subsets, 2 models: accuracy, coverage (share of lines checkable), cost, latency |
 | M5: Repair loop | | Feed the flagged line + SymPy evidence back; re-run evals |
 | M6: MCP, demo, polish | | MCP server, Gradio app on HF Spaces, README with results table |
@@ -25,19 +25,48 @@ reported as "unknown"; they never crash the whole solution.
 **Pydantic owns parsing and structure; plain functions own the maths.** A `Line` parses
 its LaTeX in a validator; a `Solution` checks its own structure. Simplifying and solving
 (slow, can time out) live in functions that take models and return typed result models.
-Models live in `stepcheck/models/`, one module per concern (`solution.py` now; verdicts,
+Models live in `stepcheck/models/`, one module per concern (`solution.py`, `verdicts.py`;
 LLM tool I/O and eval records later), re-exported from `stepcheck.models`.
 
-**Two checkers, no numeric fallback.**
-- *Identity claims* (rewrites, typically continuation lines `= ...`, and identities such
-  as `\sin^2 x + \cos^2 x = 1` or `\sin 2\theta = 2\sin\theta\cos\theta`) use
-  `simplify(a - b) == 0`. They're refuted without sampling: if `a - b = 0` has only
-  finitely many solutions, the identity is false. Anything else is "unknown", never "wrong".
-- *Conditions* (equations being solved, including systems) use the solver: lines are
-  consistent if they share at least one solution. If solution sets differ inside a
-  consistent run, a separate "lost/extra roots" warning is raised (`x^2 = 4` → `x = 2`).
-  A wrong rewrite must **not** go to the solver: `(x+1)^2 = x^2 + 1` has the solution
-  `x = 0` and would pass.
+**Two checkers, no numeric fallback** (`verify.py`). Every verdict is exact, or the
+answer is "unknown". Symbols are real numbers throughout, as in school maths.
+- *Identity claims*: continuation lines (`= ...`, compared with the start of the chain
+  or its last *correct* step), identities such as `\sin^2 x + \cos^2 x = 1`, and lines
+  with no unknowns (`3 \cdot 4 = 13`). Proved by `simplify(a - b) == 0` after
+  evaluating derivatives, integrals and sums. Refuted by a **counterexample**: exact
+  values (x = 1, then 2, -1, 1/2, ...) where `a - b` is defined and provably not 0. A
+  counterexample is a proof, and it's evidence the repair loop (M5) can show the model.
+  Neither → unknown, never wrong.
+- *Conditions*: every other statement, checked against the **system**: earlier
+  statements that were given or correct, restricted to those linked to this line by
+  shared symbols. Wrong, warning and unknown lines stay out, so one doubtful step
+  doesn't decide every later verdict. Identities stay out too (they constrain nothing).
+  - The first condition, or one that introduces a new symbol, is **given**.
+  - One variable: solution sets over the reals are compared (inequalities too).
+    Same set → correct. Loses or adds solutions → warning (`x^2 = 4` → `x = 2`; or a
+    final answer with an extra root). No common solution → wrong.
+  - Several variables, equations only: solve the system, substitute. Every solution
+    satisfies the line → correct; some → warning; none → wrong. Several-variable
+    inequalities are unknown for now.
+  - A wrong rewrite must **not** go to the solver: `(x+1)^2 = x^2 + 1` has the
+    solution `x = 0` and would pass. Continuations are identity claims for that reason.
+- Every `Finding` carries a `reason` and, for wrong lines, a `witness`: the values at
+  which the claim fails (a counterexample, or an earlier solution the line rejects).
+
+**Time limits** (`timeout.py`). `simplify()` and `solve()` can run for minutes, and a
+thread can't be stopped, so checks run in a reusable worker process that is killed and
+replaced when it runs over (10 s per line by default). It works from any thread, which
+Gradio and MCP need. SymPy objects are sent as expression trees, because plain
+pickling re-evaluates them: `3 \cdot 4 = 13` would arrive as `False`.
+
+**Known limitations of the checkers.**
+- A system's equations on *separate* lines: the second one doesn't follow from the
+  first, so it's a warning. Written as one `\begin{cases}` block they're one given
+  line, so **the M3 prompt must ask for systems as `cases`**.
+- The first condition is trusted, so a wrong restatement of the problem isn't caught
+  (M3 can compare it with the problem itself).
+- A constant SymPy can't decide (`\sin 2 - 2\sin 1\cos 1`) or an identity it can't
+  simplify is unknown.
 
 **Error localisation (stretch): `biggest_consistent_set` over contiguous runs.** Find the
 longest consistent run, recurse on the lines either side, then at each border between
@@ -105,6 +134,12 @@ clashes with the electron charge in physics.
 - `tests/test_parse.py`: the parser's traps, one test per rule in the table above.
 - `tests/test_disciplines.py`: notation from physics, chemistry, logarithms,
   trigonometry and calculus, including what must be *rejected*.
+- `tests/test_verify.py`, `tests/test_check.py`: both checkers, and how verdicts flow
+  through a solution (chains, the system, what joins it).
+- `tests/test_verify_properties.py` (Hypothesis): the checkers are *sound*. A true
+  identity (`e` vs `expand(e)`, `factor(e)`, ...) is never wrong; a false one is never
+  correct, and its counterexample checks out; claimed roots and a system with a known
+  solution get exactly the verdict their construction implies.
 - `tests/test_properties.py` (Hypothesis): random SymPy expressions → `sympy.latex` →
   parse must give the same maths, including sums and products (expressions on their
   own, statements inside a relation, and nested two or three deep with dependent bounds;

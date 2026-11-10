@@ -11,10 +11,10 @@ every number, not just the examples.
 # pyright: reportArgumentType=false
 
 from decimal import Decimal
-from fractions import Fraction
 
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
+from strategies import combine, expressions, is_finite_and_real, leaves, x
 from sympy import (
     Add,
     Basic,
@@ -22,30 +22,19 @@ from sympy import (
     Expr,
     Ge,
     Gt,
-    I,
     Integer,
     Le,
     Lt,
-    Mul,
     Or,
-    Pow,
     Product,
     Rational,
     Sum,
     Symbol,
-    cos,
-    exp,
     latex,
     log,
-    nan,
-    oo,
     pi,
     simplify,
-    sin,
-    sqrt,
     symbols,
-    tan,
-    zoo,
 )
 from sympy.core.relational import Relational
 
@@ -59,7 +48,6 @@ from stepcheck.parse import (
     split_lines,
 )
 
-x, y, z, theta, m_1, v_0 = symbols("x y z theta m_1 v_0")
 k, n = symbols("k n")  # the index and upper bound of sums and products
 NESTED_INDICES = symbols("i j l")  # outermost to innermost
 K, N = symbols("K N")
@@ -67,46 +55,11 @@ K, N = symbols("K N")
 # ----------------------------------------------------------------------- strategies
 
 
-def _rational(fraction: Fraction) -> Expr:
-    return Rational(fraction.numerator, fraction.denominator)
-
-
-leaves = st.one_of(
-    st.sampled_from([x, y, z, theta, m_1, v_0]),
-    st.integers(-12, 12).map(Integer),
-    st.fractions(min_value=-5, max_value=5, max_denominator=9).map(_rational),
-)
-
-
-def _combine(children: st.SearchStrategy[Expr]) -> st.SearchStrategy[Expr]:
-    return st.one_of(
-        st.tuples(children, children).map(lambda pair: Add(*pair)),
-        st.tuples(children, children).map(lambda pair: Mul(*pair)),
-        st.tuples(children, st.integers(-3, 4)).map(lambda pair: Pow(pair[0], pair[1])),
-        children.map(sin),
-        children.map(cos),
-        children.map(tan),
-        children.map(exp),
-        children.map(log),
-        children.map(sqrt),
-    )
-
-
-def _is_finite_and_real(expression: Basic) -> bool:
-    """Drop 1/0, log(0), sqrt(-4) = 2i and friends.
-
-    The imaginary unit is a known gap (`i` parses as a symbol), not what's under test.
-    """
-    return not expression.has(zoo, oo, -oo, nan, I) and expression.is_real is not False
-
-
-expressions = st.recursive(leaves, _combine, max_leaves=6).filter(_is_finite_and_real)
-
 # A sum or product: \sum_{k=lower}^{upper} body, where the body uses the index k.
 _bodies = (
-    st.recursive(st.one_of(st.just(k), leaves), _combine, max_leaves=4)
+    st.recursive(st.one_of(st.just(k), leaves), combine, max_leaves=4)
     .filter(lambda body: body.has(k))
-    .filter(_is_finite_and_real)
+    .filter(is_finite_and_real)
 )
 _lower_bounds = st.integers(-3, 3).map(Integer)
 _upper_bounds = st.one_of(
@@ -219,9 +172,9 @@ def _nested_body(innermost: Symbol, indices: tuple[Symbol, ...]) -> st.SearchStr
     """A body that uses the innermost index (and possibly the outer ones)."""
     atoms = st.one_of(st.sampled_from(indices), leaves)
     return (
-        st.recursive(atoms, _combine, max_leaves=4)
+        st.recursive(atoms, combine, max_leaves=4)
         .filter(lambda body: body.has(innermost))
-        .filter(_is_finite_and_real)
+        .filter(is_finite_and_real)
     )
 
 

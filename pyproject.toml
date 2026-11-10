@@ -14,6 +14,9 @@ dependencies = [
     "sympy==1.14.0",
 ]
 
+[project.scripts]
+stepcheck = "stepcheck.cli:main"
+
 [build-system]
 requires = ["uv_build>=0.11.2,<0.12.0"]
 build-backend = "uv_build"
@@ -38,4 +41,5 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.pyright]
 include = ["src", "tests"]
+extraPaths = ["tests"]  # tests import shared helpers such as `strategies`
 typeCheckingMode = "standard"
