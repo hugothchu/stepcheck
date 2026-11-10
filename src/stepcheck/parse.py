@@ -55,7 +55,9 @@ _NORMALIZATION = NormalizationConfig(
     units=False,
     malformed_operators=False,
     nits=False,
-    boxed="all",
+    # Not "all": that keeps only the boxed part, so `x = \boxed{5}` became `5`.
+    # `_unwrap_boxed` removes the box and keeps the rest of the line.
+    boxed="none",
     equations=False,
 )
 
@@ -82,6 +84,12 @@ _DEGREES = re.compile(
 
 # The grammar reserves E and e for Euler's number, so `E_{k}` is a syntax error.
 _SUBSCRIPTED_E = re.compile(r"(?<!\\mathit\{)(?<![\\A-Za-z])(?P<letter>[Ee])_")
+
+_BOXED = re.compile(r"\\boxed\s*\{")
+
+# `50\%` must be a whole number: in `2^3\%` the 3 is an exponent, so it's left alone and
+# `_convert` rejects the leftover `\%`.
+_PERCENT = re.compile(r"(?<![\^_\d.])(?P<number>\d+(?:\.\d+)?)\s*\\%")
 
 # SymPy prints log(x)**2 as `\ln{\left(x \right)}^{2}`, which the parser reads as ln(x²).
 _FUNCTION_THEN_BRACE = re.compile(r"\\(?:(?:arc)?(?:sin|cos|tan|sec|csc|cot)h?|ln|log|exp)\s*\{")
@@ -156,16 +164,27 @@ def parse_line(latex: str) -> tuple[LineKind, Basic]:
 def _clean(latex: str) -> str:
     latex = _flatten_cases(latex)
     latex = _strip_delimiters(latex)
+    latex = _unwrap_boxed(latex)
     latex = re.sub(r"(?<=\d)\{,\}(?=\d{3}(?!\d))", "", latex)  # 1{,}000 → 1000, not a{,}b
     if r"\{" not in latex:  # outside set notation, 1,000 is a thousands separator
         latex = re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", latex)
-    latex = re.sub(r"(\d+(?:\.\d+)?)\s*\\%", r"\\frac{\1}{100}", latex)  # 50\% → 1/2
+    latex = _PERCENT.sub(r"\\frac{\g<number>}{100}", latex)  # 50\% → 1/2
     latex = _SPACING.sub(" ", latex)
     latex = _DEGREES.sub(r"(\g<angle> \\cdot \\frac{\\pi}{180})", latex)  # 30^{\circ} → π/6
     latex = _unwrap_bracketed_arguments(latex)
     latex = _DELTA_QUANTITY.sub(_delta_as_subscript, latex)
     latex = _SUBSCRIPTED_E.sub(r"\\mathit{\g<letter>}_", latex)  # E_{k} → \mathit{E}_{k}
     return latex.strip()
+
+
+def _unwrap_boxed(latex: str) -> str:
+    r"""``x = \boxed{5}`` → ``x = 5`` and ``\boxed{x = 5}`` → ``x = 5``."""
+    while match := _BOXED.search(latex):
+        close_brace = _closing_index(latex, match.end() - 1, "{", "}")
+        if close_brace is None:
+            break  # unbalanced: leave it for the parser to reject
+        latex = latex[: match.start()] + latex[match.end() : close_brace] + latex[close_brace + 1 :]
+    return latex
 
 
 def _unwrap_bracketed_arguments(latex: str) -> str:
@@ -289,6 +308,8 @@ def _convert(latex: str) -> Basic:
         raise LatexParseError(f"primes are not supported yet: {latex!r}")
     if re.search(r"\\circ\b|\\degree\b", latex):  # left by _DEGREES: x_1^\circ → x_1
         raise LatexParseError(f"degrees on a compound angle are not supported: {latex!r}")
+    if r"\%" in latex:  # left by _PERCENT: 2^3\%
+        raise LatexParseError(f"a percentage of a compound expression is not supported: {latex!r}")
     try:
         result = latex2sympy(
             latex, normalization_config=_NORMALIZATION, conversion_config=_CONVERSION
@@ -303,8 +324,8 @@ def _convert(latex: str) -> Basic:
     result = _rebuild(result)
     _reject_suspicious_symbols(result, latex)
     _reject_escaped_indices(result, latex)
-    if result.has(FiniteSet) and r"\{" not in latex and r"\pm" not in latex:
-        raise LatexParseError(f"parsed as a set, probably a stray comma: {latex!r}")
+    if result.has(FiniteSet) and r"\pm" not in latex:  # only \pm may produce a set
+        raise LatexParseError(f"set notation (or a stray comma) is not supported: {latex!r}")
     return result
 
 

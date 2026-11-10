@@ -185,6 +185,20 @@ def test_word_problem_notation(latex: str, expected: int | Rational) -> None:
     assert parse_expression(latex).doit() == expected
 
 
+@pytest.mark.parametrize(
+    ("latex", "kind", "content"),
+    [
+        (r"\boxed{x = 5}", LineKind.STATEMENT, Eq(x, 5)),
+        (r"x = \boxed{5}", LineKind.STATEMENT, Eq(x, 5)),  # the parser kept only the 5
+        (r"\boxed{x = 2 \text{ or } x = 3}", LineKind.STATEMENT, Or(Eq(x, 2), Eq(x, 3))),
+        (r"x + \boxed{5}", LineKind.EXPRESSION, x + 5),
+        (r"\boxed{\frac{1}{2}}", LineKind.EXPRESSION, Rational(1, 2)),
+    ],
+)
+def test_boxed_answers_keep_the_whole_line(latex: str, kind: LineKind, content: Basic) -> None:
+    assert parse_line(latex) == (kind, content)
+
+
 def test_decimals_become_exact_rationals() -> None:
     assert parse_expression(r"0.1 + 0.2").doit() == Rational(3, 10)
 
@@ -213,6 +227,11 @@ def test_symbol_case_is_preserved() -> None:
         r"(x + 1)^{\circ}",
         r"k = 1 k = 1 k",
         r"0 < x < 1",
+        r"2^3 \%",
+        r"x_5 \%",
+        r"S = \{1, 2\}",
+        r"A = \{1\}",
+        r"\boxed{x",
     ],
     ids=[
         "vector-command",
@@ -228,6 +247,11 @@ def test_symbol_case_is_preserved() -> None:
         "degree-on-a-bracket",
         "chained-equals",
         "chained-inequality",
+        "percent-on-an-exponent",
+        "percent-on-a-subscript",
+        "set-is-not-a-choice-of-values",
+        "singleton-set-is-not-its-element",
+        "unbalanced-box",
     ],
 )
 def test_untrustworthy_input_is_rejected(latex: str) -> None:

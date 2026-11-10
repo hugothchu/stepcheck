@@ -147,6 +147,15 @@ def test_equations_round_trip(left: Expr, right: Expr) -> None:
     assert _same_maths(parsed.rhs, right), rendered
 
 
+@given(expressions, expressions)
+def test_boxing_changes_nothing(left: Expr, right: Expr) -> None:
+    # A boxed final answer means the same as the unboxed line, wherever the box is.
+    left_latex, right_latex = latex(left, ln_notation=True), latex(right, ln_notation=True)
+    plain = parse_line(f"{left_latex} = {right_latex}")
+    assert parse_line(rf"\boxed{{{left_latex} = {right_latex}}}") == plain
+    assert parse_line(rf"{left_latex} = \boxed{{{right_latex}}}") == plain
+
+
 def _same_big_operator(parsed: Basic, expected: Sum | Product) -> bool:
     """Same operator and bounds, and a body with the same maths.
 
@@ -339,7 +348,7 @@ _FRAGMENTS = [
     "x", "y", "2", "0.5", "=", "+", "-", "^", "_", "{", "}", "(", ")", ",", "\\\\", "&",
     "$", "\\$", "\\frac", "\\sqrt", "\\sin", "\\pm", "\\text{or}", "\\cdot", "\\le",
     "\\Delta", "^{\\circ}", "\\%", "\\boxed", "\\begin{cases}", "\\end{cases}", "'", " ",
-    "\\sum_{", "\\prod_{", "}^{", "k=1", "k", "n", "\\,", "dx", "\\int",
+    "\\{", "\\}", "\\sum_{", "\\prod_{", "}^{", "k=1", "k", "n", "\\,", "dx", "\\int",
 ]
 # fmt: on
 

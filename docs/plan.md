@@ -75,6 +75,9 @@ What `parse.py` adds on top (each one has a test in `tests/test_parse.py`):
 | `\sum_{j=1}^{K} i - j` ends the body early: `Sum(i, ...) - j` | rejected when a sum/product index appears outside it ("put the body in brackets") |
 | `a = b = c` arrives as `And(...)`; `k=1k=1k` crashed SymPy | chained relations rejected; found by Hypothesis |
 | `x = 1 \text{ or }` was shortened to `x = 1` | empty sides of "and"/"or" rejected |
+| `boxed="all"` keeps only the box: `x = \boxed{5}` → `5` | parser option off; `\boxed{...}` unwrapped, keeping the rest of the line |
+| `2^3\%` rewrote the exponent | percentages only of whole numbers; a leftover `\%` is rejected |
+| `S = \{1, 2\}` became `S = 1 or S = 2` | sets rejected unless produced by `\pm` |
 | `a{,}b` | `{,}` is only removed between digits; otherwise the set guard rejects it |
 | `$` stripping would eat `5 \$` | only unescaped `$` (math mode) is removed |
 | decimals become floats | converted to exact rationals |

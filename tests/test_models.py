@@ -1,6 +1,6 @@
 import pytest
 from pydantic import ValidationError
-from sympy import Eq, symbols
+from sympy import Basic, Eq, symbols
 
 from stepcheck.models import Line, Solution
 from stepcheck.parse import LineKind
@@ -43,6 +43,19 @@ def test_missing_or_non_text_latex_is_a_validation_error(data: dict[str, object]
 def test_kind_and_content_must_agree() -> None:
     with pytest.raises(ValidationError, match="exactly when it was parsed"):
         Line(latex="x", kind=LineKind.UNPARSED, content=x)
+
+
+@pytest.mark.parametrize(
+    ("kind", "content"),
+    [
+        (LineKind.STATEMENT, x),  # a Symbol is a SymPy Boolean, but not a statement
+        (LineKind.EXPRESSION, Eq(x, 1)),
+        (LineKind.CONTINUATION, Eq(x, 1)),
+    ],
+)
+def test_content_type_must_fit_the_kind(kind: LineKind, content: Basic) -> None:
+    with pytest.raises(ValidationError, match="cannot hold"):
+        Line(latex="x", kind=kind, content=content)
 
 
 def test_lines_are_immutable() -> None:

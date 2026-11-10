@@ -14,9 +14,19 @@ that take these models and return typed results.
 from typing import Any, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
-from sympy import Basic, Eq, Expr
+from sympy import And, Basic, Eq, Expr, Or
+from sympy.core.relational import Relational
+from sympy.logic.boolalg import BooleanAtom
 
 from stepcheck.parse import LatexParseError, LineKind, parse_line, split_lines
+
+# What each kind of line may hold. Statements need explicit types: a SymPy Symbol is
+# also a `Boolean`, so `isinstance(content, Boolean)` would accept `x` as a statement.
+_CONTENT_TYPES: dict[LineKind, tuple[type, ...]] = {
+    LineKind.EXPRESSION: (Expr,),
+    LineKind.CONTINUATION: (Expr,),
+    LineKind.STATEMENT: (Relational, And, Or, BooleanAtom),
+}
 
 
 class Line(BaseModel):
@@ -60,6 +70,10 @@ class Line(BaseModel):
     def content_matches_kind(self) -> Self:
         if (self.kind == LineKind.UNPARSED) != (self.content is None):
             raise ValueError("a line has content exactly when it was parsed")
+        expected = _CONTENT_TYPES.get(self.kind)
+        if expected and not isinstance(self.content, expected):
+            found = type(self.content).__name__
+            raise ValueError(f"{self.kind.value} lines cannot hold {found} content")
         return self
 
     @field_serializer("content")
