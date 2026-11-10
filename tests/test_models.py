@@ -2,7 +2,15 @@ import pytest
 from pydantic import ValidationError
 from sympy import Basic, Eq, symbols
 
-from stepcheck.models import Line, Solution
+from stepcheck.models import (
+    CheckReport,
+    Finding,
+    Line,
+    LineCheck,
+    Method,
+    Solution,
+    Verdict,
+)
 from stepcheck.parse import LineKind
 
 x, y = symbols("x y")
@@ -138,3 +146,32 @@ def test_identity_claims_from_a_rewrite_chain() -> None:
 def test_no_identity_claim_after_an_unparsed_line() -> None:
     solution = Solution.from_latex(r"\vec{v} \\ = x + 1")
     assert solution.identity_claim(1) is None
+
+
+# ----------------------------------------------------------------------- verdicts
+
+
+def test_a_decided_verdict_needs_a_method() -> None:
+    with pytest.raises(ValidationError, match="needs a method"):
+        Finding(verdict=Verdict.WRONG, method=Method.NONE, reason="because")
+
+
+def test_only_a_wrong_verdict_has_a_witness() -> None:
+    with pytest.raises(ValidationError, match="only a wrong verdict"):
+        Finding(verdict=Verdict.CORRECT, method=Method.SIMPLIFY, reason="ok", witness={"x": "1"})
+
+
+def _line_check(index: int) -> LineCheck:
+    return LineCheck(
+        index=index,
+        latex="x",
+        kind=LineKind.EXPRESSION,
+        verdict=Verdict.GIVEN,
+        method=Method.NONE,
+        reason="an expression",
+    )
+
+
+def test_report_lines_must_be_in_order() -> None:
+    with pytest.raises(ValidationError, match="in order"):
+        CheckReport(lines=(_line_check(0), _line_check(2)))

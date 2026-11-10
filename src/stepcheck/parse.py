@@ -114,6 +114,7 @@ _SPACING = re.compile(r"(?<!\\)\\[,;:! ]|\\q?quad\b")
 
 def split_lines(text: str) -> list[str]:
     """Split a solution into lines: on ``\\\\``, newlines, ``\\implies`` and similar."""
+    text = re.sub(r"(?<!\\)%.*", "", text)  # LaTeX comments run to the end of the line
     text = _flatten_cases(text)
     text = _ALIGN_ENVIRONMENT.sub("", text)
     pieces = (_strip_delimiters(piece) for piece in _LINE_BREAK.split(text))

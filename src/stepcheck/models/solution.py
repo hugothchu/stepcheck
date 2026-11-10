@@ -111,14 +111,19 @@ class Solution(BaseModel):
             raise ValueError("the first line cannot start with '=': there is nothing to continue")
         return self
 
-    def identity_claim(self, index: int) -> Eq | None:
-        """For a continuation line, the claim it makes: previous value = this value.
+    def identity_claim(self, index: int, against: int | None = None) -> Eq | None:
+        """For a continuation line, the claim it makes: earlier value = this value.
 
         Lines `(x + 1)^2` then `= x^2 + 2x + 1` claim Eq((x + 1)**2, x**2 + 2*x + 1).
-        Returns None if the line isn't a continuation, or the previous line has no value.
+        `against` is the line it continues from: by default the line before, but a
+        checker can skip back past a wrong step so one error doesn't spread.
+        Returns None if the line isn't a continuation, or that line has no value.
         """
-        line = self.lines[index]
-        previous = self.lines[index - 1].value if index > 0 else None
-        if line.kind != LineKind.CONTINUATION or previous is None or line.value is None:
+        if against is None:
+            against = index - 1
+        if not 0 <= against < index:
             return None
-        return Eq(previous, line.value, evaluate=False)  # pyright: ignore[reportReturnType]  (SymPy's stubs type Eq() as a union)
+        line, earlier = self.lines[index], self.lines[against].value
+        if line.kind != LineKind.CONTINUATION or earlier is None or line.value is None:
+            return None
+        return Eq(earlier, line.value, evaluate=False)  # pyright: ignore[reportReturnType]  (SymPy's stubs type Eq() as a union)
