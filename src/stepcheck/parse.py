@@ -298,6 +298,8 @@ def _convert(latex: str) -> Basic:
 
     if not isinstance(result, Basic):  # the parser can also return a list or None
         raise LatexParseError(f"unexpected parser output {type(result).__name__}: {latex!r}")
+    if isinstance(result, (And, Or)):  # `a = b = c` arrives as And(Eq(a, b), Eq(b, c))
+        raise LatexParseError(f"chained relations are not supported yet: {latex!r}")
     result = _rebuild(result)
     _reject_suspicious_symbols(result, latex)
     if result.has(FiniteSet) and r"\{" not in latex and r"\pm" not in latex:

@@ -2,7 +2,9 @@
 
 The main property is a round trip. Build a random SymPy expression, render it with
 SymPy's own LaTeX printer, parse it back, and it must be the same mathematics. The
-rest check that the clean-up rules hold for every number, not just the examples.
+same goes for sums and products, whose bounds (`\\sum_{k=1}^{n}`) contain an `=` that
+must not make the line a statement. The rest check that the clean-up rules hold for
+every number, not just the examples.
 """
 
 # SymPy's type stubs are loose (Eq() may "return" an Integer, Add/Mul take Basic).
@@ -18,12 +20,18 @@ from sympy import (
     Basic,
     Eq,
     Expr,
+    Ge,
+    Gt,
     I,
     Integer,
+    Le,
+    Lt,
     Mul,
     Or,
     Pow,
+    Product,
     Rational,
+    Sum,
     cos,
     exp,
     latex,
@@ -38,11 +46,19 @@ from sympy import (
     tan,
     zoo,
 )
+from sympy.core.relational import Relational
 
 from stepcheck.models import Line
-from stepcheck.parse import LineKind, parse_expression, parse_statement, split_lines
+from stepcheck.parse import (
+    LineKind,
+    parse_expression,
+    parse_line,
+    parse_statement,
+    split_lines,
+)
 
 x, y, z, theta, m_1, v_0 = symbols("x y z theta m_1 v_0")
+k, n = symbols("k n")  # the index and upper bound of sums and products
 
 # ----------------------------------------------------------------------- strategies
 
@@ -82,6 +98,25 @@ def _is_finite_and_real(expression: Basic) -> bool:
 
 expressions = st.recursive(leaves, _combine, max_leaves=6).filter(_is_finite_and_real)
 
+# A sum or product: \sum_{k=lower}^{upper} body, where the body uses the index k.
+_bodies = (
+    st.recursive(st.one_of(st.just(k), leaves), _combine, max_leaves=4)
+    .filter(lambda body: body.has(k))
+    .filter(_is_finite_and_real)
+)
+_lower_bounds = st.integers(-3, 3).map(Integer)
+_upper_bounds = st.one_of(
+    st.integers(4, 12).map(Integer),
+    st.integers(0, 3).map(lambda offset: n + offset),
+)
+big_operators = st.builds(
+    lambda operator, body, lower, upper: operator(body, (k, lower, upper)),
+    st.sampled_from([Sum, Product]),
+    _bodies,
+    _lower_bounds,
+    _upper_bounds,
+)
+
 
 def _same_maths(parsed: Basic, expected: Expr) -> bool:
     # Cheap structural check first; simplify only when the printer reordered things.
@@ -106,6 +141,38 @@ def test_equations_round_trip(left: Expr, right: Expr) -> None:
     assert isinstance(parsed, Eq), rendered
     assert _same_maths(parsed.lhs, left), rendered
     assert _same_maths(parsed.rhs, right), rendered
+
+
+def _same_big_operator(parsed: Basic, expected: Sum | Product) -> bool:
+    """Same operator and bounds, and a body with the same maths.
+
+    Compared piece by piece: simplify() on a whole Sum may try to evaluate it.
+    """
+    return (
+        type(parsed) is type(expected)
+        and parsed.limits == expected.limits
+        and _same_maths(parsed.function, expected.function)
+    )
+
+
+@given(big_operators)
+def test_sums_and_products_round_trip_as_expressions(operator: Sum | Product) -> None:
+    rendered = latex(operator, ln_notation=True)
+    kind, content = parse_line(rendered)
+    assert kind == LineKind.EXPRESSION, rendered  # the `=` in `_{k=1}` is a bound
+    assert _same_big_operator(content, operator), rendered
+
+
+@given(big_operators, expressions, st.sampled_from([Eq, Le, Lt, Ge, Gt]))
+def test_relations_with_sums_and_products_are_statements(
+    operator: Sum | Product, other_side: Expr, relation: type
+) -> None:
+    rendered = latex(relation(operator, other_side, evaluate=False), ln_notation=True)
+    kind, content = parse_line(rendered)
+    assert kind == LineKind.STATEMENT, rendered
+    assert isinstance(content, Relational) and type(content) is relation, rendered
+    assert _same_big_operator(content.lhs, operator), rendered
+    assert _same_maths(content.rhs, other_side), rendered
 
 
 # ------------------------------------------------------------- clean-up rules
@@ -155,11 +222,13 @@ _FRAGMENTS = [
     "x", "y", "2", "0.5", "=", "+", "-", "^", "_", "{", "}", "(", ")", ",", "\\\\", "&",
     "$", "\\$", "\\frac", "\\sqrt", "\\sin", "\\pm", "\\text{or}", "\\cdot", "\\le",
     "\\Delta", "^{\\circ}", "\\%", "\\boxed", "\\begin{cases}", "\\end{cases}", "'", " ",
+    "\\sum_{", "\\prod_{", "}^{", "k=1", "k", "n", "\\,", "dx", "\\int",
 ]
 # fmt: on
 
 
 @settings(max_examples=2 * settings().max_examples)
+@example("k=1k=1k")  # found by Hypothesis: a chained relation crashed SymPy's And()
 @given(st.lists(st.sampled_from(_FRAGMENTS), min_size=1, max_size=12).map("".join))
 def test_any_text_becomes_a_line_without_crashing(text: str) -> None:
     # The whole point of UNPARSED: garbage in, a recorded reason out, never an exception.

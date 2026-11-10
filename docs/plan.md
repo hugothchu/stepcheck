@@ -72,6 +72,7 @@ What `parse.py` adds on top (each one has a test in `tests/test_parse.py`):
 | `\sum_{k=1}^{n} k`: the `=` in the bound made the line a "statement" | relations are only looked for outside braces |
 | `x \, dx` split on the comma of the thin space | spacing commands removed before splitting on "and" |
 | `x_1^\circ` silently loses the degree sign | leftover degree signs rejected (only whole atoms like `30^{\circ}` are converted) |
+| `a = b = c` arrives as `And(...)`; `k=1k=1k` crashed SymPy | chained relations rejected; found by Hypothesis |
 | `x = 1 \text{ or }` was shortened to `x = 1` | empty sides of "and"/"or" rejected |
 | `a{,}b` | `{,}` is only removed between digits; otherwise the set guard rejects it |
 | `$` stripping would eat `5 \$` | only unescaped `$` (math mode) is removed |
@@ -98,6 +99,7 @@ clashes with the electron charge in physics.
 - `tests/test_disciplines.py`: notation from physics, chemistry, logarithms,
   trigonometry and calculus, including what must be *rejected*.
 - `tests/test_properties.py` (Hypothesis): random SymPy expressions → `sympy.latex` →
-  parse must give the same maths; thousands separators, decimals, `\pm` and degrees
+  parse must give the same maths, including sums and products (expressions on their
+  own, statements inside a relation); thousands separators, decimals, `\pm` and degrees
   for any number; and arbitrary LaTeX fragments must become a `Line` without raising.
   `HYPOTHESIS_PROFILE=thorough` runs 20× more examples.

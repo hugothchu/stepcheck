@@ -209,6 +209,8 @@ def test_symbol_case_is_preserved() -> None:
         r"x^2 \degree",
         r"x_1^\circ",
         r"(x + 1)^{\circ}",
+        r"k = 1 k = 1 k",
+        r"0 < x < 1",
     ],
     ids=[
         "vector-command",
@@ -222,6 +224,8 @@ def test_symbol_case_is_preserved() -> None:
         "degree-on-an-exponent",
         "degree-on-a-subscript",
         "degree-on-a-bracket",
+        "chained-equals",
+        "chained-inequality",
     ],
 )
 def test_untrustworthy_input_is_rejected(latex: str) -> None:
