@@ -26,7 +26,7 @@ from string import ascii_letters
 
 from latex2sympy2_extended import NormalizationConfig, latex2sympy
 from latex2sympy2_extended.latex2sympy2 import ConversionConfig
-from sympy import And, Basic, Eq, Expr, FiniteSet, Float, I, Or, Rational, Symbol
+from sympy import And, Basic, Eq, Expr, FiniteSet, Float, I, Or, Product, Rational, Sum, Symbol
 from sympy.core.relational import Relational
 from sympy.logic.boolalg import Boolean, BooleanAtom
 
@@ -302,6 +302,7 @@ def _convert(latex: str) -> Basic:
         raise LatexParseError(f"chained relations are not supported yet: {latex!r}")
     result = _rebuild(result)
     _reject_suspicious_symbols(result, latex)
+    _reject_escaped_indices(result, latex)
     if result.has(FiniteSet) and r"\{" not in latex and r"\pm" not in latex:
         raise LatexParseError(f"parsed as a set, probably a stray comma: {latex!r}")
     return result
@@ -317,6 +318,24 @@ def _reject_suspicious_symbols(result: Basic, latex: str) -> None:
     for name in map(str, result.free_symbols):
         if not _is_symbol_name(name):
             raise LatexParseError(f"suspicious symbol {name!r} in {latex!r}")
+
+
+def _reject_escaped_indices(result: Basic, latex: str) -> None:
+    r"""A sum or product index must not also appear outside that sum or product.
+
+    Without brackets the body ends early: ``\sum_{j=1}^{K} i - j`` parses as
+    ``Sum(i, (j, 1, K)) - j``, leaving a meaningless ``j`` outside. Brackets fix it:
+    ``\sum_{j=1}^{K} (i - j)``. (This also rejects reusing a name on purpose, as in
+    ``j + \sum_{j=1}^{n} j``; that's rare, and it becomes "unknown", not "wrong".)
+    """
+    for operator in result.atoms(Sum, Product):
+        escaped = set(operator.variables) & result.free_symbols
+        if escaped:
+            names = ", ".join(sorted(map(str, escaped)))
+            raise LatexParseError(
+                f"index {names} is used outside its sum or product; "
+                f"put the body in brackets: {latex!r}"
+            )
 
 
 def _is_symbol_name(name: str) -> bool:

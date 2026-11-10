@@ -72,6 +72,7 @@ What `parse.py` adds on top (each one has a test in `tests/test_parse.py`):
 | `\sum_{k=1}^{n} k`: the `=` in the bound made the line a "statement" | relations are only looked for outside braces |
 | `x \, dx` split on the comma of the thin space | spacing commands removed before splitting on "and" |
 | `x_1^\circ` silently loses the degree sign | leftover degree signs rejected (only whole atoms like `30^{\circ}` are converted) |
+| `\sum_{j=1}^{K} i - j` ends the body early: `Sum(i, ...) - j` | rejected when a sum/product index appears outside it ("put the body in brackets") |
 | `a = b = c` arrives as `And(...)`; `k=1k=1k` crashed SymPy | chained relations rejected; found by Hypothesis |
 | `x = 1 \text{ or }` was shortened to `x = 1` | empty sides of "and"/"or" rejected |
 | `a{,}b` | `{,}` is only removed between digits; otherwise the set guard rejects it |
@@ -87,7 +88,10 @@ must require brackets around every function argument**, and units inside `\text{
 (`s = 5 m` can't be told apart from `s = 5 \cdot m`). Heuristics can come later.
 
 Not supported yet: set notation as a line's content (`\{1, 2, 3\}`), the imaginary unit
-(`i` stays a symbol), chains with several `=` on one continuation line, vectors,
+(`i` stays a symbol), chains with several `=` on one continuation line, `\substack` bounds (SymPy's own
+printing of nested sums, `\sum_{\substack{i \leq j \leq K\\1 \leq i \leq N}}`, so its LaTeX
+for a nested Sum doesn't round-trip; written as `\sum_{i=1}^{N} \sum_{j=i}^{K}` it
+parses), vectors,
 primes, ion concentrations (`[H^+]`), named quantities written as words
 (`\mathrm{pH}`), and units. `\frac{\partial f}{\partial x}` treats `f` as a
 constant, so it evaluates to 0 (a strict xfail). A lone `e` is Euler's number, which
@@ -100,6 +104,7 @@ clashes with the electron charge in physics.
   trigonometry and calculus, including what must be *rejected*.
 - `tests/test_properties.py` (Hypothesis): random SymPy expressions → `sympy.latex` →
   parse must give the same maths, including sums and products (expressions on their
-  own, statements inside a relation); thousands separators, decimals, `\pm` and degrees
+  own, statements inside a relation, and nested two or three deep with dependent bounds;
+  unbracketed nested bodies must parse as intended or be rejected); thousands separators, decimals, `\pm` and degrees
   for any number; and arbitrary LaTeX fragments must become a `Line` without raising.
   `HYPOTHESIS_PROFILE=thorough` runs 20× more examples.

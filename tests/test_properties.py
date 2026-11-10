@@ -32,6 +32,7 @@ from sympy import (
     Product,
     Rational,
     Sum,
+    Symbol,
     cos,
     exp,
     latex,
@@ -50,6 +51,7 @@ from sympy.core.relational import Relational
 
 from stepcheck.models import Line
 from stepcheck.parse import (
+    LatexParseError,
     LineKind,
     parse_expression,
     parse_line,
@@ -59,6 +61,8 @@ from stepcheck.parse import (
 
 x, y, z, theta, m_1, v_0 = symbols("x y z theta m_1 v_0")
 k, n = symbols("k n")  # the index and upper bound of sums and products
+NESTED_INDICES = symbols("i j l")  # outermost to innermost
+K, N = symbols("K N")
 
 # ----------------------------------------------------------------------- strategies
 
@@ -173,6 +177,119 @@ def test_relations_with_sums_and_products_are_statements(
     assert isinstance(content, Relational) and type(content) is relation, rendered
     assert _same_big_operator(content.lhs, operator), rendered
     assert _same_maths(content.rhs, other_side), rendered
+
+
+# ------------------------------------------------------- nested sums and products
+#
+# SymPy prints a nested Sum with \substack, which the parser can't read (a known
+# gap), so these LaTeX strings are written by hand: one \sum_{i=a}^{b} per level,
+# with inner bounds that may depend on outer indices (\sum_{j=i}^{K}).
+
+Level = tuple[type, Symbol, Expr, Expr]  # (Sum or Product, index, lower, upper)
+
+
+@st.composite
+def nested_levels(draw: st.DrawFn) -> list[Level]:
+    depth = draw(st.integers(2, 3))
+    levels: list[Level] = []
+    for index in NESTED_INDICES[:depth]:
+        outer = [level[1] for level in levels]
+        lower = draw(st.one_of(st.integers(-2, 2).map(Integer), *map(st.just, outer)))
+        upper = draw(
+            st.one_of(
+                st.integers(3, 8).map(Integer),
+                st.sampled_from([K, N]),
+                *(st.integers(1, 3).map(lambda c, o=o: o + c) for o in outer),
+            )
+        )
+        levels.append((draw(st.sampled_from([Sum, Product])), index, lower, upper))
+    return levels
+
+
+def _nested_body(innermost: Symbol, indices: tuple[Symbol, ...]) -> st.SearchStrategy[Expr]:
+    """A body that uses the innermost index (and possibly the outer ones)."""
+    atoms = st.one_of(st.sampled_from(indices), leaves)
+    return (
+        st.recursive(atoms, _combine, max_leaves=4)
+        .filter(lambda body: body.has(innermost))
+        .filter(_is_finite_and_real)
+    )
+
+
+def _render(levels: list[Level], body_latex: str) -> str:
+    operators = "".join(
+        rf"\{'sum' if operator is Sum else 'prod'}_{{{index}={latex(lower)}}}^{{{latex(upper)}}} "
+        for operator, index, lower, upper in levels
+    )
+    return operators + body_latex
+
+
+def _build(levels: list[Level], body: Expr) -> Expr:
+    for operator, index, lower, upper in reversed(levels):  # innermost first
+        body = operator(body, (index, lower, upper))
+    return body
+
+
+def _flatten(expression: Basic) -> tuple[list[tuple[type, tuple]], Basic]:
+    """Operators and ranges outermost first, plus the body: undoes SymPy's merging.
+
+    Sum(Sum(f, (j, ...)), (i, ...)) and Sum(f, (j, ...), (i, ...)) both give
+    [(Sum, (i, ...)), (Sum, (j, ...))] and f.
+    """
+    ranges: list[tuple[type, tuple]] = []
+    while isinstance(expression, (Sum, Product)):
+        ranges += [(type(expression), limit) for limit in reversed(expression.limits)]
+        expression = expression.function
+    return ranges, expression
+
+
+@st.composite
+def nested_operators(draw: st.DrawFn) -> tuple[list[Level], Expr]:
+    levels = draw(nested_levels())
+    indices = tuple(level[1] for level in levels)
+    return levels, draw(_nested_body(indices[-1], indices))
+
+
+@given(nested_operators())
+def test_nested_sums_and_products_round_trip(case: tuple[list[Level], Expr]) -> None:
+    levels, body = case
+    rendered = _render(levels, rf"\left({latex(body, ln_notation=True)}\right)")
+    kind, content = parse_line(rendered)
+    assert kind == LineKind.EXPRESSION, rendered
+    parsed_ranges, parsed_body = _flatten(content)
+    expected_ranges, expected_body = _flatten(_build(levels, body))
+    assert parsed_ranges == expected_ranges, rendered
+    assert isinstance(expected_body, Expr)
+    assert _same_maths(parsed_body, expected_body), rendered
+
+
+@st.composite
+def ambiguous_nested_operators(draw: st.DrawFn) -> tuple[list[Level], Expr]:
+    """A body that's a sum of terms, each using the innermost index: k + k x + ..."""
+    levels = draw(nested_levels())
+    indices = tuple(level[1] for level in levels)
+    innermost = indices[-1]
+    factors = st.one_of(st.sampled_from(indices), leaves)
+    terms = st.lists(factors.map(lambda factor: factor * innermost), min_size=2, max_size=3)
+    return levels, Add(*draw(terms))
+
+
+@given(ambiguous_nested_operators())
+def test_unbracketed_nested_bodies_are_never_misread(case: tuple[list[Level], Expr]) -> None:
+    # Without brackets the parser may end the body early. If it does, a term with
+    # the innermost index lands outside its sum, so the line must be rejected; if it
+    # doesn't, the parse must be the intended one. Never a different reading.
+    levels, body = case
+    rendered = _render(levels, latex(body))
+    try:
+        content = parse_expression(rendered)
+    except LatexParseError:
+        return
+    parsed_ranges, parsed_body = _flatten(content)
+    expected_ranges, expected_body = _flatten(_build(levels, body))
+    assert parsed_ranges == expected_ranges, rendered
+    assert isinstance(expected_body, Expr)
+    assert _same_maths(parsed_body, expected_body), rendered
 
 
 # ------------------------------------------------------------- clean-up rules

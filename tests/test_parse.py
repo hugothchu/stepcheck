@@ -13,7 +13,9 @@ from sympy import (
     Integral,
     Ne,
     Or,
+    Product,
     Rational,
+    Sum,
     Symbol,
     atan,
     cos,
@@ -282,6 +284,50 @@ def test_line_kinds(latex: str, kind: LineKind) -> None:
 def test_operator_bounds_are_not_relations(latex: str, kind: LineKind) -> None:
     # The `=` in `\sum_{k=1}` is part of the bound, not a claim about the line.
     assert parse_line(latex)[0] == kind
+
+
+i, j, n, K, N = symbols("i j n K N")
+
+
+@pytest.mark.parametrize(
+    ("latex", "expected"),
+    [
+        # SymPy merges a sum of a sum into one Sum with two ranges, innermost first.
+        (r"\sum_{i=1}^{N} \sum_{j=i}^{K} (i - j)", Sum(Sum(i - j, (j, i, K)), (i, 1, N))),
+        (
+            r"\sum_{i=1}^{N} \left( \sum_{j=i}^{K} (i - j) \right)",
+            Sum(Sum(i - j, (j, i, K)), (i, 1, N)),
+        ),
+        (r"\prod_{i=1}^{n} \sum_{j=1}^{i} j", Product(Sum(j, (j, 1, i)), (i, 1, n))),
+        (r"\sum_{i=1}^{N} i \sum_{j=1}^{K} j", Sum(i * Sum(j, (j, 1, K)), (i, 1, N))),
+        (r"\sum_{k=1}^{n} k - n", Sum(Symbol("k"), (Symbol("k"), 1, n)) - n),  # n isn't an index
+    ],
+    ids=["dependent-bound", "bracketed-inner-sum", "product-of-sums", "factor-then-sum", "minus-n"],
+)
+def test_nested_sums_and_products(latex: str, expected: Basic) -> None:
+    assert parse_expression(latex) == expected
+
+
+def test_nested_sum_has_the_right_value() -> None:
+    # With N = K = 3: (1-1)+(1-2)+(1-3) + (2-2)+(2-3) + (3-3) = -4
+    parsed = parse_expression(r"\sum_{i=1}^{N} \sum_{j=i}^{K} (i - j)")
+    assert parsed.subs({N: 3, K: 3}).doit() == -4
+
+
+@pytest.mark.parametrize(
+    "latex",
+    [
+        r"\sum_{i=1}^{N} \sum_{j=i}^{K} i - j",
+        r"\sum_{i=1}^{N} \sum_{j=1}^{K} i + j",
+        r"\prod_{k=1}^{n} k + k^{2}",
+        r"\sum_{k=1}^{n} k = k",
+    ],
+    ids=["inner-index-escapes", "plus-escapes", "product-body-escapes", "index-in-a-relation"],
+)
+def test_index_outside_its_sum_is_rejected(latex: str) -> None:
+    # Without brackets the body ends early and the index is left outside its sum.
+    with pytest.raises(LatexParseError, match="outside its sum or product"):
+        parse_line(latex)
 
 
 def test_thin_space_is_not_an_and() -> None:
