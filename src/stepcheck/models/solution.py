@@ -48,6 +48,8 @@ class Line(BaseModel):
             data = {"latex": data}
         if not isinstance(data, dict) or "kind" in data:
             return data  # already parsed (e.g. copied from another Line)
+        if not isinstance(data.get("latex"), str):
+            return data  # missing or not text: let field validation report it
         try:
             kind, content = parse_line(data["latex"])
         except LatexParseError as error:

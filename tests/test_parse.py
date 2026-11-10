@@ -81,11 +81,32 @@ def test_mixing_and_with_or_is_rejected() -> None:
         parse_statement(r"x = 1, y = 2 \text{ or } y = 3")
 
 
-def test_arithmetic_relations_stay_unevaluated() -> None:
-    # A wrong arithmetic line must keep both sides, not collapse to `False`.
-    wrong = parse_statement(r"3 \cdot 4 = 13")
-    assert isinstance(wrong, Eq)
-    assert wrong.rhs == 13
+@pytest.mark.parametrize(
+    "latex",
+    [r"x = 1 \text{ or }", r"x = 1,", r"\lor x = 1", ""],
+    ids=["trailing-or", "trailing-comma", "leading-or", "empty"],
+)
+def test_incomplete_statements_are_rejected(latex: str) -> None:
+    # Dropping the empty side would turn `x = 1 or ...` into the claim `x = 1`.
+    with pytest.raises(LatexParseError):
+        parse_statement(latex)
+
+
+@pytest.mark.parametrize(
+    ("latex", "rhs"),
+    [
+        (r"3 \cdot 4 = 13", 13),
+        (r"0.1 = 0.2", Rational(1, 5)),  # decimals become rationals without evaluating `=`
+        (r"I = I", Symbol("I")),  # nor does replacing I
+    ],
+    ids=["arithmetic", "decimals", "capital-i"],
+)
+def test_relations_stay_unevaluated(latex: str, rhs: Basic) -> None:
+    # A line must keep both sides, not collapse to `True` / `False`: a following
+    # `= ...` line continues from its right-hand side.
+    relation = parse_statement(latex)
+    assert isinstance(relation, Eq)
+    assert relation.rhs == rhs
 
 
 # ------------------------------------------------------------------ trigonometry
@@ -185,6 +206,9 @@ def test_symbol_case_is_preserved() -> None:
         r"f'(x) = 2x",
         r"5 \text{ km} = 5000 \text{ m}",
         r"\frac{d^2 y}{dx^2}",
+        r"x^2 \degree",
+        r"x_1^\circ",
+        r"(x + 1)^{\circ}",
     ],
     ids=[
         "vector-command",
@@ -195,6 +219,9 @@ def test_symbol_case_is_preserved() -> None:
         "prime-would-vanish",
         "units-would-be-stripped",
         "dx-would-be-a-symbol",
+        "degree-on-an-exponent",
+        "degree-on-a-subscript",
+        "degree-on-a-bracket",
     ],
 )
 def test_untrustworthy_input_is_rejected(latex: str) -> None:
@@ -236,6 +263,30 @@ def test_line_kinds(latex: str, kind: LineKind) -> None:
     assert parse_line(latex)[0] == kind
 
 
+@pytest.mark.parametrize(
+    ("latex", "kind"),
+    [
+        (r"\sum_{k=1}^{n} k", LineKind.EXPRESSION),
+        (r"\prod_{i=1}^{n} i", LineKind.EXPRESSION),
+        (r"\sum_{k=1}^{n} k^{2} + \prod_{i=1}^{3} i", LineKind.EXPRESSION),
+        (r"\sum_{k=1}^{n} k = \frac{n(n+1)}{2}", LineKind.STATEMENT),
+        (r"\prod_{i=1}^{3} i = 6", LineKind.STATEMENT),
+        (r"\sum_{k=1}^{n} k^{2} \le n^{3}", LineKind.STATEMENT),
+        (r"= \sum_{k=1}^{n} k", LineKind.CONTINUATION),
+    ],
+)
+def test_operator_bounds_are_not_relations(latex: str, kind: LineKind) -> None:
+    # The `=` in `\sum_{k=1}` is part of the bound, not a claim about the line.
+    assert parse_line(latex)[0] == kind
+
+
+def test_thin_space_is_not_an_and() -> None:
+    # `\,` contains a comma, which must not split `x \, dx` into "x and dx".
+    assert parse_statement(r"\int_0^1 x \, dx = \frac{1}{2}") == Eq(
+        Integral(x, (x, 0, 1)), Rational(1, 2)
+    )
+
+
 def test_split_lines() -> None:
     text = r"""\begin{aligned}
     (x+1)^2 &= x^2 + 2x + 1 \\
@@ -247,3 +298,20 @@ def test_split_lines() -> None:
 def test_split_lines_keeps_cases_together() -> None:
     text = r"\begin{cases} x + y = 3 \\ x - y = 1 \end{cases} \\ x = 2"
     assert split_lines(text) == ["x + y = 3 , x - y = 1", "x = 2"]
+
+
+def test_split_lines_keeps_cases_together_across_source_lines() -> None:
+    text = "\\begin{cases}\n  x + y = 3 \\\\\n  x - y = 1\n\\end{cases}"
+    assert len(split_lines(text)) == 1
+    assert parse_statement(split_lines(text)[0]) == And(Eq(x + y, 3), Eq(x - y, 1))
+
+
+@pytest.mark.parametrize(
+    ("text", "lines"),
+    [
+        (r"\begin{aligned}{x+1}^2 &= y\end{aligned}", ["{x+1}^2 = y"]),  # braces are maths
+        (r"\begin{array}{cc} x = 1 \end{array}", ["x = 1"]),  # {cc} is a column spec
+    ],
+)
+def test_environment_markers_are_removed(text: str, lines: list[str]) -> None:
+    assert split_lines(text) == lines

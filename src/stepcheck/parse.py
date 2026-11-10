@@ -73,8 +73,11 @@ _SUBSCRIPT = re.compile(r"_(\w+|\{.*\})$")
 _ACCENT = re.compile(r"^(bar|hat|tilde|dot|ddot)\{(?P<base>.+)\}$")
 
 # `30^{\circ}` must become π/6: the parser reads `\sin 30^{\circ}` as sin(30 radians).
+# The angle must be a whole atom: in `x^2\degree` the 2 is an exponent, so that line is
+# left alone, and `_convert` rejects the leftover degree sign (the parser would drop it).
 _DEGREES = re.compile(
-    r"(?P<angle>\d+(?:\.\d+)?|[A-Za-z]|\\[A-Za-z]+)\s*(?:\^\s*\{?\s*\\circ\s*\}?|\\degree\b)"
+    r"(?<![\^_\d.])(?P<angle>\d+(?:\.\d+)?|[A-Za-z]|\\[A-Za-z]+)"
+    r"\s*(?:\^\s*\{?\s*\\circ\s*\}?|\\degree\b)"
 )
 
 # The grammar reserves E and e for Euler's number, so `E_{k}` is a syntax error.
@@ -91,8 +94,11 @@ _AND_SEPARATOR = re.compile(r",|\\text\{\s*and\s*\}|\\land\b|\\wedge\b")
 _LINE_BREAK = re.compile(r"\\\\|\n|\\implies\b|\\Rightarrow\b|\\iff\b|\\Leftrightarrow\b")
 _CASES = re.compile(r"\\begin\{cases\}(?P<body>.*?)\\end\{cases\}", re.DOTALL)
 _ALIGN_ENVIRONMENT = re.compile(
-    r"\\(begin|end)\{(aligned|align\*?|gathered|split|array)\}(\{[^}]*\})?"
+    r"\\(?:begin|end)\{(?:aligned|align\*?|gathered|split)\}"
+    r"|\\begin\{array\}\{[^}]*\}|\\end\{array\}"  # only array has a column spec: {cc}
 )
+# Spacing commands. `\,` must go before splitting on commas: `x \, dx` is not "x and dx".
+_SPACING = re.compile(r"(?<!\\)\\[,;:! ]|\\q?quad\b")
 
 
 # ------------------------------------------------------------------ public functions
@@ -124,6 +130,8 @@ def parse_statement(latex: str) -> Boolean:
     cleaned = _clean(latex)
     or_parts = _split_top_level(cleaned, _OR_SEPARATOR)
     and_parts = _split_top_level(cleaned, _AND_SEPARATOR)
+    if "" in or_parts or "" in and_parts:
+        raise LatexParseError(f"incomplete statement, an 'and'/'or' has a missing side: {latex!r}")
     if len(or_parts) > 1 and len(and_parts) > 1:
         raise LatexParseError(f"mixing 'and' and 'or' in one line is ambiguous: {latex!r}")
 
@@ -152,7 +160,7 @@ def _clean(latex: str) -> str:
     if r"\{" not in latex:  # outside set notation, 1,000 is a thousands separator
         latex = re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", latex)
     latex = re.sub(r"(\d+(?:\.\d+)?)\s*\\%", r"\\frac{\1}{100}", latex)  # 50\% → 1/2
-    latex = re.sub(r"\\q?quad\b", " ", latex)
+    latex = _SPACING.sub(" ", latex)
     latex = _DEGREES.sub(r"(\g<angle> \\cdot \\frac{\\pi}{180})", latex)  # 30^{\circ} → π/6
     latex = _unwrap_bracketed_arguments(latex)
     latex = _DELTA_QUANTITY.sub(_delta_as_subscript, latex)
@@ -217,11 +225,15 @@ def _strip_delimiters(latex: str) -> str:
 
 def _flatten_cases(latex: str) -> str:
     r"""``\begin{cases} a \\ b \end{cases}`` → ``a, b`` (a system: all must hold)."""
-    return _CASES.sub(lambda m: m["body"].replace(r"\\", ","), latex)
+    return _CASES.sub(lambda m: m["body"].replace(r"\\", ",").replace("\n", " "), latex)
 
 
 def _split_top_level(text: str, separator: re.Pattern[str]) -> list[str]:
-    """Split on `separator`, ignoring matches inside brackets: f(1,2), \\{1,2\\}, {...}."""
+    """Split on `separator`, ignoring matches inside brackets: f(1,2), \\{1,2\\}, {...}.
+
+    Empty parts are kept (`x = 1 \\text{or}` → ["x = 1", ""]), so an incomplete
+    statement is rejected rather than quietly shortened.
+    """
     parts: list[str] = []
     depth = start = position = 0
     while position < len(text):
@@ -236,11 +248,26 @@ def _split_top_level(text: str, separator: re.Pattern[str]) -> list[str]:
             continue
         position += 1
     parts.append(text[start:])
-    return [part.strip() for part in parts if part.strip()]
+    return [part.strip() for part in parts]
 
 
 def _has_relation(latex: str) -> bool:
-    return bool(re.search(r"=|<|>|\\[lg]eq?\b|\\neq?\b", latex))
+    r"""Is there a relation outside braces? ``\sum_{k=1}^{n} k`` is an expression."""
+    return bool(re.search(r"=|<|>|\\[lg]eq?\b|\\neq?\b", _outside_braces(latex)))
+
+
+def _outside_braces(latex: str) -> str:
+    r"""``\sum_{k=1}^{n} k = 3`` → ``\sum_^ k = 3``: drop everything inside ``{...}``."""
+    kept: list[str] = []
+    depth = 0
+    for char in latex:
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth = max(depth - 1, 0)
+        elif depth == 0:
+            kept.append(char)
+    return "".join(kept)
 
 
 # ----------------------------------------------------------------------- conversion
@@ -260,6 +287,8 @@ def _convert(latex: str) -> Basic:
         raise LatexParseError("empty LaTeX")
     if "'" in latex:  # the parser silently drops primes: f'(x) → f(x)
         raise LatexParseError(f"primes are not supported yet: {latex!r}")
+    if re.search(r"\\circ\b|\\degree\b", latex):  # left by _DEGREES: x_1^\circ → x_1
+        raise LatexParseError(f"degrees on a compound angle are not supported: {latex!r}")
     try:
         result = latex2sympy(
             latex, normalization_config=_NORMALIZATION, conversion_config=_CONVERSION
@@ -269,11 +298,11 @@ def _convert(latex: str) -> Basic:
 
     if not isinstance(result, Basic):  # the parser can also return a list or None
         raise LatexParseError(f"unexpected parser output {type(result).__name__}: {latex!r}")
-    result = result.xreplace({I: Symbol("I")})  # `I` is a current or an integral, not √-1
+    result = _rebuild(result)
     _reject_suspicious_symbols(result, latex)
     if result.has(FiniteSet) and r"\{" not in latex and r"\pm" not in latex:
         raise LatexParseError(f"parsed as a set, probably a stray comma: {latex!r}")
-    return _evaluate_arithmetic(_exact(result))
+    return result
 
 
 def _reject_suspicious_symbols(result: Basic, latex: str) -> None:
@@ -298,26 +327,29 @@ def _is_symbol_name(name: str) -> bool:
 def _expand_plus_minus(result: Basic) -> Basic:
     r"""``Eq(x, {-2, 2})`` (from ``x = \pm 2``) → ``Or(Eq(x, -2), Eq(x, 2))``."""
     if isinstance(result, Eq) and isinstance(result.rhs, FiniteSet):
-        equations = [Eq(result.lhs, value) for value in result.rhs]
+        equations = [Eq(result.lhs, value, evaluate=False) for value in result.rhs]
         return Or(*equations)  # pyright: ignore[reportArgumentType]  (SymPy's stubs type Eq() as a union)
     return result
 
 
-def _exact(result: Basic) -> Basic:
-    """Replace floats with exact rationals: 0.5 → 1/2, so solving stays exact."""
-    return result.xreplace({value: Rational(str(value)) for value in result.atoms(Float)})
+def _rebuild(result: Basic) -> Basic:
+    """Rebuild the parser's tree bottom-up, fixing atoms and evaluating arithmetic.
 
+    * floats become exact rationals: 0.5 → 1/2, so solving stays exact;
+    * `I` becomes a plain symbol: it's a current or an integral, not √-1;
+    * arithmetic is evaluated as usual: 1*5*x → 5*x.
 
-def _evaluate_arithmetic(result: Basic) -> Basic:
-    """Rebuild the parser's unevaluated tree with SymPy's usual evaluation: 1*5*x → 5*x.
-
-    Relations are rebuilt *unevaluated*, so a wrong line such as 3·4 = 13 keeps both
-    sides instead of collapsing to `False`. Derivatives and integrals stay unevaluated
-    too (rebuilding them doesn't compute them).
+    Relations are rebuilt *unevaluated*, so a wrong line such as 3·4 = 13 or
+    0.1 = 0.2 keeps both sides instead of collapsing to `False`. Derivatives and
+    integrals stay unevaluated too (rebuilding them doesn't compute them).
     """
+    if isinstance(result, Float):
+        return Rational(str(result))
+    if result is I:
+        return Symbol("I")
     if not result.args:
         return result
-    args = [_evaluate_arithmetic(arg) for arg in result.args]
+    args = [_rebuild(arg) for arg in result.args]
     if isinstance(result, Relational):
         return result.func(*args, evaluate=False)
     return result.func(*args)

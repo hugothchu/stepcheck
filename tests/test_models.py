@@ -34,6 +34,12 @@ def test_empty_line_is_invalid() -> None:
         Line.from_latex("")
 
 
+@pytest.mark.parametrize("data", [{}, {"latex": None}, {"latex": 3}])
+def test_missing_or_non_text_latex_is_a_validation_error(data: dict[str, object]) -> None:
+    with pytest.raises(ValidationError, match="latex"):
+        Line.model_validate(data)
+
+
 def test_kind_and_content_must_agree() -> None:
     with pytest.raises(ValidationError, match="exactly when it was parsed"):
         Line(latex="x", kind=LineKind.UNPARSED, content=x)

@@ -69,6 +69,10 @@ What `parse.py` adds on top (each one has a test in `tests/test_parse.py`):
 | `\Delta x` is `Delta * x` | rewritten to one symbol `Delta_x` (a bare `\Delta` stays a symbol) |
 | `E_{k}` is a syntax error (E is Euler's number) | rewritten to `\mathit{E}_{k}` |
 | `\ln{\left(x \right)}^{2}` (SymPy's own printing of (ln x)²) is ln(x²) | braces around one bracketed argument are removed; found by Hypothesis |
+| `\sum_{k=1}^{n} k`: the `=` in the bound made the line a "statement" | relations are only looked for outside braces |
+| `x \, dx` split on the comma of the thin space | spacing commands removed before splitting on "and" |
+| `x_1^\circ` silently loses the degree sign | leftover degree signs rejected (only whole atoms like `30^{\circ}` are converted) |
+| `x = 1 \text{ or }` was shortened to `x = 1` | empty sides of "and"/"or" rejected |
 | `a{,}b` | `{,}` is only removed between digits; otherwise the set guard rejects it |
 | `$` stripping would eat `5 \$` | only unescaped `$` (math mode) is removed |
 | decimals become floats | converted to exact rationals |
